@@ -127,6 +127,10 @@ struct EstimatedDistribution {
         return sum;
     }
 
+    real distDiff( const Distribution & other ){
+        return 0;
+    }
+
 };
 
 struct Node : public EstimatedDistribution {
@@ -138,7 +142,8 @@ using WeighedEdge = IndexedValue<int, real>;
 struct Graph {
     std::vector< Node > nodes;
     std::vector< std::vector<WeighedEdge> > neighbors;
-    std::unordered_set< int > seed_indices;
+
+    std::vector< std::pair<int, Node> > seeds;
 
     Distribution prior;
 
@@ -150,23 +155,32 @@ struct Graph {
         real neighborDist = 0;
         real labelDist = 0;
 
-        int i = 0;
+        int i;
+        #pragma omp parallel for private(i)
+        for( i=0; i < seeds.size(); i++ ){
+            int index = seeds[i].first;
+            Node & seed = seeds[i].second;
+            Node & pred = nodes[index];
+        }
+
         #pragma omp parallel for private(i)
         for( i=0; i < nodes.size(); i++ ){
 
             auto & node = nodes[i];
-            auto & neighors = neighbors[i];
-            bool is_seed = ( seed_indices.find(i) == seed_indices.end() );
+            auto & neighbor = neighbors[i];
 
-            real sd = 0, nd = 0, ld = 0;
+            real nd = 0, ld = 0;
 
-            for( int j = 0; j < i*100; j++ ){
-                sd += 1;
+            for( auto & kv : neighbor ){
+                auto dest   = kv.index;
+                auto weight = kv.value;
+
+                nd += weight * node.distDiff( nodes[dest] );
             }
+            ld = node.distDiff(prior);
 
             #pragma omp critical 
             {
-                seedDist += sd;
                 neighborDist += nd;
                 labelDist += ld;
             }
@@ -179,5 +193,5 @@ struct Graph {
 int main(){
     Graph graph;
     graph.nodes.resize(100000);
-    graph.computeObjective();
+    //graph.computeObjective();
 }
