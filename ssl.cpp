@@ -36,13 +36,25 @@ auto get_container( const T & obj ) -> typename T::container_type {
     return Hack::gc(obj);
 }
 
-struct Node {
+struct LogNumber {
+    real value;
+
+    LogNumber & operator*=( const LogNumber & x ){ value += x.value; return *this;}
+    LogNumber & operator/=( const LogNumber & x ){ value -= x.value; return *this;}
+
+};
+
+struct Distribution {
+    std::vector< real > prob;
+};
+
+struct EstimatedDistribution {
     int n, k;
     std::priority_queue< LabelProb > heap;
     real sum;
     std::unordered_set<int> indices;
 
-    Node( int n, int k ) : n(n), k(k), sum(0) {
+    EstimatedDistribution( int n, int k ) : n(n), k(k), sum(0) {
     }
 
     real getEstimatedProb(int=0) const {
@@ -67,7 +79,7 @@ struct Node {
         }
     }
 
-    Node & setProb( int i , real p ) {
+    EstimatedDistribution & setProb( int i , real p ) {
         if ( heap.size() < k ){
             heap.push( {i,p} );
             indices.insert(i);
@@ -86,11 +98,10 @@ struct Node {
         return *this;
     }
 
-    real distDiff( const Node & rhs ) const {
+    real distDiff( const EstimatedDistribution & rhs ) const {
         real sum = 0;
 
         real est_x = getEstimatedProb(), est_y = rhs.getEstimatedProb();
-
 
         for ( auto && lab : get_container(heap) ){
             real d = 0;
@@ -118,13 +129,55 @@ struct Node {
 
 };
 
+struct Node : public EstimatedDistribution {
+    Node() : EstimatedDistribution(10, 5) {}
+};
+
 using WeighedEdge = IndexedValue<int, real>;
 
 struct Graph {
     std::vector< Node > nodes;
-    std::vector< std::vector<WeighedEdge> > edges;
+    std::vector< std::vector<WeighedEdge> > neighbors;
+    std::unordered_set< int > seed_indices;
+
+    Distribution prior;
+
+    real coef[3];
+
+
+    real computeObjective(){
+        real seedDist = 0;
+        real neighborDist = 0;
+        real labelDist = 0;
+
+        int i = 0;
+        #pragma omp parallel for private(i)
+        for( i=0; i < nodes.size(); i++ ){
+
+            auto & node = nodes[i];
+            auto & neighors = neighbors[i];
+            bool is_seed = ( seed_indices.find(i) == seed_indices.end() );
+
+            real sd = 0, nd = 0, ld = 0;
+
+            for( int j = 0; j < i*100; j++ ){
+                sd += 1;
+            }
+
+            #pragma omp critical 
+            {
+                seedDist += sd;
+                neighborDist += nd;
+                labelDist += ld;
+            }
+        }
+
+        return coef[0]*seedDist + coef[1]*neighborDist + coef[2]*labelDist;
+    }
 };
 
-
 int main(){
+    Graph graph;
+    graph.nodes.resize(100000);
+    graph.computeObjective();
 }
