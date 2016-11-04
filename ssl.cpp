@@ -1,197 +1,159 @@
-#include <cstdio>
-#include <iostream>
-#include <vector>
-#include <deque>
-#include <algorithm>
-#include <unordered_set>
-#include <queue>
-#include <list>
+#include "ssl.h"
 
-#define RANGE(c) std::begin(c), std::end(c)
 
-typedef double real;
-
-template<class Index, class Value>
-struct IndexedValue {
-    Index index;
-    Value value;
-
-    IndexedValue( const Index & i, const Value & v) : index(i), value(v) {
+EstimatedDistribution::EstimatedDistribution( int n, int k ) : n(n), k(k), sum(0) {
     }
-};
-struct LabelProb : public IndexedValue<int, real> {
-    using IndexedValue<int, real>::IndexedValue;
-    bool operator<( const LabelProb & rhs ) const {
-        return value > rhs.value;
-    }
-};
 
-template<class T>
-auto get_container( const T & obj ) -> typename T::container_type {
-    struct Hack : public T {
-        static const typename T::container_type & gc( const T & obj ){
-            return obj.*&Hack::c;
-        };
-    } ;
-    return Hack::gc(obj);
+EstimatedDistribution & EstimatedDistribution::setProb( int i , real p ) {
+    if ( heap.size() < k ){
+        heap.push( {i,p} );
+        indices.insert(i);
+        sum += p;
+    } else {
+        auto & minValue = heap.top();
+        if ( minValue.value >= p ){
+            /* nothing */
+        } else {
+            indices.erase(minValue.index); heap.pop();
+            indices.insert(i);             heap.push( {i,p} );
+            sum = sum + p - minValue.value;
+        }
+
+    }
+    return *this;
 }
 
-struct LogNumber {
-    real value;
+real EstimatedDistribution::distDiff( const EstimatedDistribution & rhs ) const {
+    real sum = 0;
 
-    LogNumber & operator*=( const LogNumber & x ){ value += x.value; return *this;}
-    LogNumber & operator/=( const LogNumber & x ){ value -= x.value; return *this;}
+    real est_x = getEstimatedProb(), est_y = rhs.getEstimatedProb();
 
-};
-
-struct Distribution {
-    std::vector< real > prob;
-};
-
-struct EstimatedDistribution {
-    int n, k;
-    std::priority_queue< LabelProb > heap;
-    real sum;
-    std::unordered_set<int> indices;
-
-    EstimatedDistribution( int n, int k ) : n(n), k(k), sum(0) {
-    }
-
-    real getEstimatedProb(int=0) const {
-        return ( 1 - sum ) / ( n - k );
-    }
-    real getExactProb( int i ) const {
-        const auto & c = get_container(heap);
-        return std::find_if( RANGE(c), [&]( const LabelProb & o) {
-            return o.index == i;
-        })->value;
-    }
-
-    bool isEstimated(int i) const {
-        return indices.find(i) == indices.end();
-    }
-
-    real getProb( int i ) const {
-        if( isEstimated(i) ){
-            return getEstimatedProb();
-        }else{
-            return getExactProb(i);
-        }
-    }
-
-    EstimatedDistribution & setProb( int i , real p ) {
-        if ( heap.size() < k ){
-            heap.push( {i,p} );
-            indices.insert(i);
-            sum += p;
+    for ( auto && lab : get_container(heap) ){
+        real d = 0;
+        if ( rhs.isEstimated(lab.index) ){
+            d = lab.value - est_y;
         } else {
-            auto & minValue = heap.top();
-            if ( minValue.value >= p ){
-                /* nothing */
-            } else {
-                indices.erase(minValue.index); heap.pop();
-                indices.insert(i);             heap.push( {i,p} );
-                sum = sum + p - minValue.value;
-            }
-
+            d = lab.value - rhs.getEstimatedProb(lab.index);
         }
-        return *this;
+        sum += d*d;
     }
 
-    real distDiff( const EstimatedDistribution & rhs ) const {
-        real sum = 0;
-
-        real est_x = getEstimatedProb(), est_y = rhs.getEstimatedProb();
-
-        for ( auto && lab : get_container(heap) ){
-            real d = 0;
-            if ( rhs.isEstimated(lab.index) ){
-                d = lab.value - est_y;
-            } else {
-                d = lab.value - rhs.getEstimatedProb(lab.index);
-            }
+    int cnt = heap.size();
+    for( auto && lab : get_container(rhs.heap) ){
+        if ( rhs.isEstimated(lab.index) ){
+            real d = lab.value - est_x;
             sum += d*d;
+            cnt += 1;
         }
-
-        int cnt = heap.size();
-        for( auto && lab : get_container(rhs.heap) ){
-            if ( rhs.isEstimated(lab.index) ){
-                real d = lab.value - est_x;
-                sum += d*d;
-                cnt += 1;
-            }
-        }
-
-        sum += (est_x - est_y)*(est_x - est_y) * ( n - cnt );
-
-        return sum;
     }
 
-    real distDiff( const Distribution & other ){
-        return 0;
+    sum += (est_x - est_y)*(est_x - est_y) * ( n - cnt );
+
+    return sum;
+}
+
+real EstimatedDistribution::distDiff( const Distribution & other ) const{
+    real sum = 0;
+
+    for( size_t i=0; i < other.size(); i++){
+        real d = other.getProb(i) - getProb(i);
+        sum += d*d;
     }
 
-};
-
-struct Node : public EstimatedDistribution {
-    Node() : EstimatedDistribution(10, 5) {}
-};
-
-using WeighedEdge = IndexedValue<int, real>;
-
-struct Graph {
-    std::vector< Node > nodes;
-    std::vector< std::vector<WeighedEdge> > neighbors;
-
-    std::vector< std::pair<int, Node> > seeds;
-
-    Distribution prior;
-
-    real coef[3];
+    return sum;
+}
 
 
-    real computeObjective(){
-        real seedDist = 0;
-        real neighborDist = 0;
-        real labelDist = 0;
 
-        int i;
-        #pragma omp parallel for private(i)
-        for( i=0; i < seeds.size(); i++ ){
-            int index = seeds[i].first;
-            Node & seed = seeds[i].second;
-            Node & pred = nodes[index];
+
+real Graph::computeObjective() const{
+    real seedDist = 0;
+    real neighborDist = 0;
+    real labelDist = 0;
+
+    size_t i;
+    #pragma omp parallel for private(i)
+    for( i=0; i < seeds.size(); i++ ){
+        int index = seeds[i].first;
+        const Node & seed = seeds[i].second;
+        const Node & pred = nodes[index];
+
+        real d = seed.distDiff(pred);
+
+        #pragma omp critical 
+        {
+            seedDist += d;
         }
 
-        #pragma omp parallel for private(i)
-        for( i=0; i < nodes.size(); i++ ){
-
-            auto & node = nodes[i];
-            auto & neighbor = neighbors[i];
-
-            real nd = 0, ld = 0;
-
-            for( auto & kv : neighbor ){
-                auto dest   = kv.index;
-                auto weight = kv.value;
-
-                nd += weight * node.distDiff( nodes[dest] );
-            }
-            ld = node.distDiff(prior);
-
-            #pragma omp critical 
-            {
-                neighborDist += nd;
-                labelDist += ld;
-            }
-        }
-
-        return coef[0]*seedDist + coef[1]*neighborDist + coef[2]*labelDist;
     }
-};
 
-int main(){
-    Graph graph;
-    graph.nodes.resize(100000);
-    //graph.computeObjective();
+    #pragma omp parallel for private(i)
+    for( i=0; i < nodes.size(); i++ ){
+
+        auto & node = nodes[i];
+        auto & neighbor = neighbors[i];
+
+        real nd = 0, ld = 0;
+
+        for( auto & kv : neighbor ){
+            auto dest   = kv.index;
+            auto weight = kv.value;
+
+            nd += weight * node.distDiff( nodes[dest] );
+        }
+        ld = node.distDiff(prior);
+
+        #pragma omp critical 
+        {
+            neighborDist += nd;
+            labelDist += ld;
+        }
+    }
+
+    return coef[0]*seedDist + coef[1]*neighborDist + coef[2]*labelDist;
+}
+
+void Graph::prepare(){
+    for( size_t i=0; i < seeds.size(); i++ ){
+        seed_indices[ seeds[i].first ] =  i;
+    }
+}
+void Graph::update(){
+
+    std::copy( std::begin(nodes), std::end(nodes), std::begin(nodes_buffer) );
+
+    size_t i;
+    #pragma omp parallel for private(i)
+    for( i=0; i < nodes.size(); i++ ){
+        real m = 0;
+
+        for( WeighedEdge & neighbor : neighbors[i] ){ 
+            m += neighbor.value; 
+        }
+        m *= coef[1];
+
+        m += coef[2];
+
+        bool is_seed = this->is_seed(i);
+
+        if( is_seed ) m += coef[0];
+
+        Node & new_node = nodes[i];
+
+        for( size_t l = 0; l < prior.size(); l++){
+
+            real new_prob = 0;
+            for( WeighedEdge & neighbor : neighbors[i] ){ 
+                new_prob += nodes_buffer[ neighbor.index ].getProb(l) * neighbor.value; 
+            }
+            new_prob *= coef[1];
+            
+            new_prob += is_seed ? coef[0] * seeds[ seed_indices[i] ].second.getProb(l) : 0;
+            new_prob += coef[2] * prior.getProb(l);
+
+            new_prob /= m;
+
+            new_node.setProb(l, new_prob);
+        }
+    }
 }
